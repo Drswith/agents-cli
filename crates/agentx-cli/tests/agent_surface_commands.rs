@@ -148,11 +148,19 @@ echo {\"dependencies\":{\"deepseek-tui\":{\"version\":\"0.8.24\"}}}\r\n",
         )
         .expect("npm.cmd should be written");
     } else {
+        let npm_path = workspace.bin_dir().join("npm");
         fs::write(
-            workspace.bin_dir().join("npm"),
+            &npm_path,
             "#!/bin/sh\nprintf '%s\\n' '{\"dependencies\":{\"deepseek-tui\":{\"version\":\"0.8.24\"}}}'\n",
         )
         .expect("npm shim should be written");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            fs::set_permissions(&npm_path, fs::Permissions::from_mode(0o755))
+                .expect("npm shim should be executable");
+        }
     }
 
     let output = run_agx(&workspace, &["--json", "list"]);

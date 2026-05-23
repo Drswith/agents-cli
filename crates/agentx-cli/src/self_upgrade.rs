@@ -857,9 +857,7 @@ fn perform_standalone_upgrade(
     {
         use std::os::unix::fs::PermissionsExt;
 
-        let mode = fs::metadata(executable)
-            .map(|metadata| metadata.permissions().mode())
-            .unwrap_or(0o755);
+        let mode = fs::metadata(executable).map_or(0o755, |metadata| metadata.permissions().mode());
         let _ = fs::set_permissions(&temp_path, fs::Permissions::from_mode(mode));
     }
 
