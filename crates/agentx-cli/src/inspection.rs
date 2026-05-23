@@ -145,7 +145,11 @@ fn get_latest_version_for_agent(agent: AgentDefinition, context: &CliContext) ->
     let installed_state = state::get_installed_agent_state(agent.name);
     let package_name = installed_state
         .as_ref()
-        .and_then(|state| state.package_name.as_deref())
+        .and_then(|state| {
+            matches!(state.install_type.as_str(), "bun" | "npm")
+                .then_some(state.package_name.as_deref())
+                .flatten()
+        })
         .or(agent.npm_package)?;
     get_latest_version(package_name, context)
 }

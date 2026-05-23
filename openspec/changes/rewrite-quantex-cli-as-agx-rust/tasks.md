@@ -71,6 +71,7 @@
 - [x] 4.3.28 Close remaining `--color` parity gaps by honoring `auto`, `always`, and `never` in human output rendering.
 - [x] 4.3.29 Close remaining Windows npm parity and list readability gaps by executing managed npm operations through the native Windows launcher while keeping human `list` output aligned with `quantex-cli`.
 - [x] 4.3.30 Close latest `quantex-cli` 0.17.0 parity gaps by updating the submodule, adding VTCode catalog support, Cargo managed install/update/uninstall handling, Cargo installer capabilities, and regression tests.
+- [x] 4.3.31 Close latest `quantex-cli` 0.19.0 parity gaps by updating the submodule, adding pip/uv managed lifecycle support, exposing pip/uv capabilities and schemas, restoring explicit `exec` default `--install never`, rejecting structured shortcut execution, and adding regression tests.
 - [x] 4.4 Add AGX agent workflow bootstrap, OpenSpec README/config, and project-memory spec.
 - [x] 4.5 Add task-start and worktree runbooks.
 - [x] 4.6 Add Rust workspace architecture ADR.

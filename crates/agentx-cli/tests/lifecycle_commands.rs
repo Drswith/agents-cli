@@ -51,6 +51,52 @@ fn install_dry_run_supports_cargo_managed_agents() {
 }
 
 #[test]
+fn install_dry_run_prefers_uv_for_python_managed_agents() {
+    let workspace = TestWorkspace::new();
+    let output = run_agx(&workspace, &["--json", "--dry-run", "install", "vibe"]);
+
+    assert!(output.status.success());
+    let json = stdout_json(&output);
+    assert_eq!(json["data"]["installState"]["installType"], "uv");
+    assert_eq!(json["data"]["installState"]["packageName"], "mistral-vibe");
+    assert!(
+        json["data"]["message"]
+            .as_str()
+            .expect("dry-run message should exist")
+            .contains("uv tool install mistral-vibe")
+    );
+}
+
+#[test]
+fn install_dry_run_records_uv_install_args() {
+    if cfg!(windows) {
+        return;
+    }
+
+    let workspace = TestWorkspace::new();
+    let output = run_agx(&workspace, &["--json", "--dry-run", "install", "kimi"]);
+
+    assert!(output.status.success());
+    let json = stdout_json(&output);
+    assert_eq!(json["data"]["installState"]["installType"], "uv");
+    assert_eq!(json["data"]["installState"]["packageName"], "kimi-cli");
+    assert_eq!(
+        json["data"]["installState"]["packageInstallArgs"][0],
+        "--python"
+    );
+    assert_eq!(
+        json["data"]["installState"]["packageInstallArgs"][1],
+        "3.13"
+    );
+    assert!(
+        json["data"]["message"]
+            .as_str()
+            .expect("dry-run message should exist")
+            .contains("uv tool install kimi-cli --python 3.13")
+    );
+}
+
+#[test]
 fn install_cargo_agent_records_managed_state() {
     let workspace = TestWorkspace::new();
 
@@ -222,7 +268,7 @@ fn install_manual_only_agent_requires_manual_action() {
         json["error"]["message"]
             .as_str()
             .expect("message should exist")
-            .contains("does not have a managed npm, Bun, or Cargo package yet")
+            .contains("does not have a managed npm, Bun, Cargo, pip, or uv package yet")
     );
 }
 
@@ -570,6 +616,66 @@ fn uninstall_dry_run_uses_recorded_cargo_package() {
             .as_str()
             .expect("message should exist")
             .contains("cargo uninstall vtcode")
+    );
+}
+
+#[test]
+fn uninstall_dry_run_uses_recorded_uv_package() {
+    let workspace = TestWorkspace::new();
+    workspace.write_state_bytes(
+        br#"{
+  "installedAgents": {
+    "vibe": {
+      "agentName": "vibe",
+      "installType": "uv",
+      "packageName": "mistral-vibe",
+      "packageTargetKind": "package"
+    }
+  },
+  "self": {}
+}
+"#,
+    );
+
+    let output = run_agx(&workspace, &["--json", "--dry-run", "uninstall", "vibe"]);
+
+    assert!(output.status.success());
+    let json = stdout_json(&output);
+    assert!(
+        json["data"]["message"]
+            .as_str()
+            .expect("message should exist")
+            .contains("uv tool uninstall mistral-vibe")
+    );
+}
+
+#[test]
+fn uninstall_dry_run_uses_recorded_pip_package() {
+    let workspace = TestWorkspace::new();
+    workspace.write_state_bytes(
+        br#"{
+  "installedAgents": {
+    "vibe": {
+      "agentName": "vibe",
+      "installType": "pip",
+      "packageName": "mistral-vibe",
+      "packageTargetKind": "package"
+    }
+  },
+  "self": {}
+}
+"#,
+    );
+
+    let output = run_agx(&workspace, &["--json", "--dry-run", "uninstall", "vibe"]);
+
+    assert!(output.status.success());
+    let json = stdout_json(&output);
+    assert!(
+        json["data"]["message"]
+            .as_str()
+            .expect("message should exist")
+            .contains("pip uninstall -y mistral-vibe")
     );
 }
 
@@ -960,6 +1066,75 @@ fn update_single_cargo_uses_force_install_with_recorded_args() {
 }
 
 #[test]
+fn update_single_uv_uses_tool_upgrade_with_recorded_args() {
+    let workspace = TestWorkspace::new();
+    let capture_path = workspace.root().join("commands.log");
+    workspace.write_state_bytes(
+        br#"{
+  "installedAgents": {
+    "openhands": {
+      "agentName": "openhands",
+      "installType": "uv",
+      "packageName": "openhands",
+      "packageTargetKind": "package",
+      "packageInstallArgs": ["--python", "3.12"]
+    }
+  },
+  "self": {}
+}
+"#,
+    );
+
+    let capture = capture_path.to_string_lossy().into_owned();
+    let output = run_agx_with_env(
+        &workspace,
+        &["--json", "update", "openhands"],
+        &[
+            ("AGX_TEST_ALLOW_EXTERNAL_SUCCESS", "1"),
+            ("AGX_TEST_CAPTURE_COMMAND_PATH", &capture),
+        ],
+    );
+
+    assert!(output.status.success());
+    let captured = fs::read_to_string(capture_path).expect("capture file should exist");
+    assert!(captured.contains("uv tool upgrade openhands --python 3.12"));
+}
+
+#[test]
+fn update_single_pip_uses_upgrade_install() {
+    let workspace = TestWorkspace::new();
+    let capture_path = workspace.root().join("commands.log");
+    workspace.write_state_bytes(
+        br#"{
+  "installedAgents": {
+    "vibe": {
+      "agentName": "vibe",
+      "installType": "pip",
+      "packageName": "mistral-vibe",
+      "packageTargetKind": "package"
+    }
+  },
+  "self": {}
+}
+"#,
+    );
+
+    let capture = capture_path.to_string_lossy().into_owned();
+    let output = run_agx_with_env(
+        &workspace,
+        &["--json", "update", "vibe"],
+        &[
+            ("AGX_TEST_ALLOW_EXTERNAL_SUCCESS", "1"),
+            ("AGX_TEST_CAPTURE_COMMAND_PATH", &capture),
+        ],
+    );
+
+    assert!(output.status.success());
+    let captured = fs::read_to_string(capture_path).expect("capture file should exist");
+    assert!(captured.contains("pip install --upgrade mistral-vibe"));
+}
+
+#[test]
 fn update_single_bun_respect_semver_uses_bun_update_without_latest() {
     let workspace = TestWorkspace::new();
     let capture_path = workspace.root().join("commands.log");
@@ -1199,6 +1374,115 @@ fn update_all_batches_npm_respect_semver_updates_into_one_command() {
     assert!(lines[0].contains("@openai/codex"));
     assert!(lines[0].contains("@qoder-ai/qodercli"));
     assert!(!lines[0].contains("@latest"));
+}
+
+#[test]
+fn update_all_runs_uv_tool_upgrades_sequentially() {
+    let workspace = TestWorkspace::new();
+    let capture_path = workspace.root().join("commands.log");
+    workspace.write_state_bytes(
+        br#"{
+  "installedAgents": {
+    "openhands": {
+      "agentName": "openhands",
+      "installType": "uv",
+      "packageName": "openhands",
+      "packageTargetKind": "package",
+      "packageInstallArgs": ["--python", "3.12"]
+    },
+    "vibe": {
+      "agentName": "vibe",
+      "installType": "uv",
+      "packageName": "mistral-vibe",
+      "packageTargetKind": "package"
+    }
+  },
+  "self": {}
+}
+"#,
+    );
+
+    let capture = capture_path.to_string_lossy().into_owned();
+    let output = run_agx_with_env(
+        &workspace,
+        &["--json", "update", "--all"],
+        &[
+            ("AGX_TEST_ALLOW_EXTERNAL_SUCCESS", "1"),
+            ("AGX_TEST_CAPTURE_COMMAND_PATH", &capture),
+        ],
+    );
+
+    assert!(output.status.success());
+    let captured = fs::read_to_string(capture_path).expect("capture file should exist");
+    let lines = captured
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect::<Vec<_>>();
+    assert_eq!(lines.len(), 2);
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains("uv tool upgrade openhands --python 3.12"))
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains("uv tool upgrade mistral-vibe"))
+    );
+}
+
+#[test]
+fn update_all_runs_pip_upgrades_sequentially() {
+    let workspace = TestWorkspace::new();
+    let capture_path = workspace.root().join("commands.log");
+    workspace.write_state_bytes(
+        br#"{
+  "installedAgents": {
+    "openhands": {
+      "agentName": "openhands",
+      "installType": "pip",
+      "packageName": "openhands",
+      "packageTargetKind": "package"
+    },
+    "vibe": {
+      "agentName": "vibe",
+      "installType": "pip",
+      "packageName": "mistral-vibe",
+      "packageTargetKind": "package"
+    }
+  },
+  "self": {}
+}
+"#,
+    );
+
+    let capture = capture_path.to_string_lossy().into_owned();
+    let output = run_agx_with_env(
+        &workspace,
+        &["--json", "update", "--all"],
+        &[
+            ("AGX_TEST_ALLOW_EXTERNAL_SUCCESS", "1"),
+            ("AGX_TEST_CAPTURE_COMMAND_PATH", &capture),
+        ],
+    );
+
+    assert!(output.status.success());
+    let captured = fs::read_to_string(capture_path).expect("capture file should exist");
+    let lines = captured
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect::<Vec<_>>();
+    assert_eq!(lines.len(), 2);
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains("pip install --upgrade openhands"))
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains("pip install --upgrade mistral-vibe"))
+    );
 }
 
 #[test]

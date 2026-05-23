@@ -515,7 +515,7 @@ fn render_capabilities(result: &CommandResult, painter: &Painter) {
     );
 
     println!("\n{}:", painter.bold("Installers"));
-    for installer in ["bun", "npm", "brew", "cargo", "winget"] {
+    for installer in ["bun", "npm", "brew", "cargo", "pip", "uv", "winget"] {
         let available = data["installers"][installer]["available"]
             .as_bool()
             .unwrap_or(false);
@@ -691,6 +691,22 @@ fn render_doctor(data: &Value, painter: &Painter) {
     println!(
         "  cargo: {}",
         if data["installers"]["cargo"].as_bool().unwrap_or(false) {
+            painter.green("available")
+        } else {
+            painter.red("not found")
+        }
+    );
+    println!(
+        "  pip:   {}",
+        if data["installers"]["pip"].as_bool().unwrap_or(false) {
+            painter.green("available")
+        } else {
+            painter.red("not found")
+        }
+    );
+    println!(
+        "  uv:    {}",
+        if data["installers"]["uv"].as_bool().unwrap_or(false) {
             painter.green("available")
         } else {
             painter.red("not found")

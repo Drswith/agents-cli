@@ -83,13 +83,13 @@ AGX SHALL execute supported agent binaries through explicit and shortcut command
 - AND preflight failures duplicate install guidance into both `data.execution.installGuidance` and `error.details`
 - AND launched executions do not depend on captured child stdout or stderr fields in the structured contract
 
-#### Scenario: Explicit execution defaults to install confirmation
+#### Scenario: Explicit execution defaults to no install
 
 - GIVEN the requested agent is not installed
 - WHEN the user runs `agx exec <agent> -- <args>` without an explicit `--install` policy
-- THEN AGX treats the request as install-on-prompt behavior
-- AND asks for confirmation in interactive sessions before installing
-- AND returns `INTERACTION_REQUIRED` in non-interactive sessions unless another install policy was provided
+- THEN AGX treats the request as `--install never`
+- AND does not prompt or install before execution
+- AND returns `AGENT_NOT_INSTALLED` with install guidance
 
 #### Scenario: Human execution preserves interactive agent stdio
 
@@ -120,13 +120,13 @@ AGX SHALL execute supported agent binaries through explicit and shortcut command
 
 - WHEN the user runs `agx <agent> <args>`
 - THEN AGX treats the invocation as shortcut execution for that agent
-- AND uses the same execution behavior as `agx exec`
+- AND uses the same human-mode execution behavior as `agx exec`
 
-#### Scenario: Shortcut execution supports structured output modes
+#### Scenario: Shortcut execution rejects structured output modes
 
 - WHEN the user runs `agx <agent> <args>` with `--json` or `--output ndjson`
-- THEN AGX reuses the same structured execution contract as `agx exec`
-- AND returns structured success or error envelopes instead of rejecting the output mode
+- THEN AGX rejects the shortcut request
+- AND explains that structured output is not supported for shortcut agent execution yet
 
 #### Scenario: Shortcut execution needs an install confirmation
 
@@ -169,6 +169,7 @@ AGX SHALL execute supported agent binaries through explicit and shortcut command
 
 - WHEN the user runs `agx list`, `agx info <agent>`, `agx inspect <agent>`, or `agx capabilities`
 - THEN AGX renders install method labels as `bun` and `npm` for managed package installs
+- AND Python package install methods are exposed as managed `uv` and `pip` methods when the reference catalog declares them
 - AND `agx list` uses stable column-style human output with status, version, update mode, and source details
 - AND `agx info` omits the lifecycle line when the agent is not installed
 - AND `agx capabilities` renders platform, output modes, agents, installers, and full feature coverage in the stable order

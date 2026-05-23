@@ -226,6 +226,55 @@ fn inspect_exposes_install_methods_and_self_update_metadata() {
 }
 
 #[test]
+fn inspect_exposes_python_install_methods_for_vibe() {
+    let workspace = TestWorkspace::new();
+    let output = run_agx(&workspace, &["--json", "inspect", "vibe"]);
+
+    assert!(output.status.success());
+    let json = stdout_json(&output);
+    let methods = json["data"]["capabilities"]["installMethods"]
+        .as_array()
+        .expect("install methods should be an array");
+    let commands: Vec<_> = methods
+        .iter()
+        .filter_map(|method| method["command"].as_str())
+        .collect();
+    let labels: Vec<_> = methods
+        .iter()
+        .filter_map(|method| method["label"].as_str())
+        .collect();
+
+    assert!(commands.contains(&"uv tool install mistral-vibe"));
+    assert!(commands.contains(&"pip install mistral-vibe"));
+    assert!(labels.contains(&"managed/uv"));
+    assert!(labels.contains(&"managed/pip"));
+    assert_eq!(json["data"]["capabilities"]["canAutoInstall"], true);
+}
+
+#[test]
+fn inspect_exposes_uv_python_args_for_kimi_on_unix() {
+    if cfg!(windows) {
+        return;
+    }
+
+    let workspace = TestWorkspace::new();
+    let output = run_agx(&workspace, &["--json", "inspect", "kimi"]);
+
+    assert!(output.status.success());
+    let json = stdout_json(&output);
+    let methods = json["data"]["capabilities"]["installMethods"]
+        .as_array()
+        .expect("install methods should be an array");
+    let commands: Vec<_> = methods
+        .iter()
+        .filter_map(|method| method["command"].as_str())
+        .collect();
+
+    assert!(commands.contains(&"uv tool install kimi-cli --python 3.13"));
+    assert_eq!(json["data"]["capabilities"]["canAutoInstall"], true);
+}
+
+#[test]
 fn inspect_human_output_shows_latest_version_for_installed_agent() {
     let workspace = TestWorkspace::new();
     workspace.install_fake_agent_binary("qodercli");
