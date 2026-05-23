@@ -161,18 +161,18 @@ fn exec_ndjson_emits_single_result_event() {
 }
 
 #[test]
-fn exec_without_install_policy_returns_manual_action_required_when_missing() {
+fn exec_without_install_policy_returns_agent_not_installed_when_missing() {
     let workspace = TestWorkspace::new();
     let output = run_agx(&workspace, &["--json", "exec", "jcode", "--", "--version"]);
 
-    assert_eq!(output.status.code(), Some(7));
+    assert_eq!(output.status.code(), Some(4));
     let json = stdout_json(&output);
-    assert_eq!(json["error"]["code"], "INTERACTION_REQUIRED");
+    assert_eq!(json["error"]["code"], "AGENT_NOT_INSTALLED");
     assert!(
         json["error"]["message"]
             .as_str()
             .expect("message should be a string")
-            .contains("interactive installation is disabled")
+            .contains("retry with `--install if-missing`")
     );
     assert_eq!(
         json["data"]["execution"]["installGuidance"]["suggestedEnsureCommand"],
@@ -186,7 +186,7 @@ fn exec_without_install_policy_returns_manual_action_required_when_missing() {
         json["data"]["execution"]["installGuidance"]["suggestedAction"],
         "rerun-with-install-policy"
     );
-    assert_eq!(json["data"]["execution"]["installPolicy"], "prompt");
+    assert_eq!(json["data"]["execution"]["installPolicy"], "never");
     assert_eq!(json["data"]["execution"]["installed"], false);
     assert_eq!(json["data"]["execution"]["interactive"], false);
     assert_eq!(json["data"]["execution"]["launched"], false);
@@ -223,30 +223,34 @@ fn exec_install_policy_alias_is_still_accepted() {
 }
 
 #[test]
-fn shortcut_exec_supports_structured_output_modes() {
+fn shortcut_exec_rejects_structured_output_modes() {
     let workspace = TestWorkspace::new();
     workspace.install_fake_agent_binary("qodercli");
 
     let json_output = run_agx(&workspace, &["--json", "qoder", "--", "--version"]);
 
-    assert!(json_output.status.success());
+    assert_eq!(json_output.status.code(), Some(2));
     let json = stdout_json(&json_output);
     assert_eq!(json["action"], "exec");
-    assert_eq!(json["data"]["agent"]["name"], "qoder");
-    assert_eq!(json["data"]["execution"]["installPolicy"], "if-missing");
-    assert_eq!(json["data"]["execution"]["launched"], true);
+    assert_eq!(json["error"]["code"], "INVALID_ARGUMENT");
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .expect("message should exist")
+            .contains("Structured output is not supported")
+    );
 
     let ndjson_output = run_agx(
         &workspace,
         &["--output", "ndjson", "qoder", "--", "--version"],
     );
 
-    assert!(ndjson_output.status.success());
+    assert_eq!(ndjson_output.status.code(), Some(2));
     let lines = stdout_json_lines(&ndjson_output);
     assert_eq!(lines.len(), 1);
     assert_eq!(lines[0]["type"], "result");
     assert_eq!(lines[0]["action"], "exec");
-    assert_eq!(lines[0]["data"]["data"]["agent"]["name"], "qoder");
+    assert_eq!(lines[0]["data"]["error"]["code"], "INVALID_ARGUMENT");
 }
 
 #[test]
@@ -267,12 +271,15 @@ fn shortcut_exec_json_mode_returns_interaction_required_when_install_is_needed()
     let workspace = TestWorkspace::new();
     let output = run_agx(&workspace, &["--json", "qoder", "--", "--version"]);
 
-    assert_eq!(output.status.code(), Some(7));
+    assert_eq!(output.status.code(), Some(2));
     let json = stdout_json(&output);
-    assert_eq!(json["error"]["code"], "INTERACTION_REQUIRED");
-    assert_eq!(json["data"]["execution"]["installPolicy"], "if-missing");
-    assert_eq!(json["data"]["execution"]["interactive"], false);
-    assert_eq!(json["data"]["execution"]["launched"], false);
+    assert_eq!(json["error"]["code"], "INVALID_ARGUMENT");
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .expect("message should exist")
+            .contains("Structured output is not supported")
+    );
 }
 
 #[test]
@@ -324,7 +331,7 @@ fn explicit_exec_human_mode_returns_agent_process_exit_code() {
 }
 
 #[test]
-fn explicit_exec_default_prompt_installs_after_interactive_confirmation() {
+fn explicit_exec_default_never_does_not_prompt_or_install() {
     let workspace = TestWorkspace::new();
     let bin_dir = workspace.bin_dir().to_string_lossy().into_owned();
 
@@ -339,13 +346,14 @@ fn explicit_exec_default_prompt_installs_after_interactive_confirmation() {
         "y\n",
     );
 
-    assert!(output.status.success());
-    let stdout = String::from_utf8(output.stdout).expect("stdout should be utf8");
-    assert!(stdout.contains("agx 0.1.0"));
+    assert_eq!(output.status.code(), Some(4));
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be utf8");
+    assert!(stderr.contains("retry with `--install if-missing`"));
+    assert!(!workspace.bin_dir().join("qodercli").exists());
 }
 
 #[test]
-fn explicit_exec_default_prompt_cancelled_install_returns_cancelled_error() {
+fn explicit_exec_default_never_ignores_negative_prompt_input() {
     let workspace = TestWorkspace::new();
 
     let output = support::run_agx_with_stdin(
@@ -355,13 +363,13 @@ fn explicit_exec_default_prompt_cancelled_install_returns_cancelled_error() {
         "n\n",
     );
 
-    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(output.status.code(), Some(4));
     let stderr = String::from_utf8(output.stderr).expect("stderr should be utf8");
-    assert!(stderr.contains("cancelled"));
+    assert!(stderr.contains("retry with `--install if-missing`"));
 }
 
 #[test]
-fn explicit_exec_default_prompt_non_interactive_returns_interaction_required() {
+fn explicit_exec_default_never_non_interactive_returns_not_installed() {
     let workspace = TestWorkspace::new();
     let output = run_agx(
         &workspace,
@@ -375,10 +383,10 @@ fn explicit_exec_default_prompt_non_interactive_returns_interaction_required() {
         ],
     );
 
-    assert_eq!(output.status.code(), Some(7));
+    assert_eq!(output.status.code(), Some(4));
     let json = stdout_json(&output);
-    assert_eq!(json["error"]["code"], "INTERACTION_REQUIRED");
-    assert_eq!(json["data"]["execution"]["installPolicy"], "prompt");
+    assert_eq!(json["error"]["code"], "AGENT_NOT_INSTALLED");
+    assert_eq!(json["data"]["execution"]["installPolicy"], "never");
     assert_eq!(json["data"]["execution"]["interactive"], false);
     assert_eq!(json["data"]["execution"]["launched"], false);
 }

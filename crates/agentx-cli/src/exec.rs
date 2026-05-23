@@ -67,9 +67,6 @@ pub fn execute_agent(
     let installed_before = inspection::find_binary_in_path(agent.binary_name).is_some();
     let interactive =
         context.interactive && matches!(context.output_mode, crate::context::OutputMode::Human);
-    let should_prompt_install =
-        !installed_before && matches!(install_policy, InstallPolicyArg::Prompt);
-
     if context.dry_run {
         return Ok(ExecResult {
             agent: exec_agent(agent),
@@ -85,31 +82,8 @@ pub fn execute_agent(
         });
     }
 
-    if should_prompt_install {
-        if !interactive && !context.assume_yes {
-            return Err(AgxError::new(
-                AgxErrorCode::InteractionRequired,
-                format!(
-                    "{} is not installed and interactive installation is disabled.",
-                    agent.display_name
-                ),
-            ));
-        }
-
-        if interactive && !context.assume_yes && !confirm_exec_install(agent)? {
-            return Err(AgxError::new(
-                AgxErrorCode::Cancelled,
-                format!("Installation cancelled for {}.", agent.display_name),
-            ));
-        }
-    }
-
     if matches!(install_policy, InstallPolicyArg::Always)
-        || (!installed_before
-            && matches!(
-                install_policy,
-                InstallPolicyArg::IfMissing | InstallPolicyArg::Prompt
-            ))
+        || (!installed_before && matches!(install_policy, InstallPolicyArg::IfMissing))
     {
         package_manager::ensure_agent(agent, context).map_err(|error| {
             if matches!(error.code, AgxErrorCode::InstallFailed) {
@@ -130,7 +104,7 @@ pub fn execute_agent(
         return Err(AgxError::new(
             AgxErrorCode::AgentNotInstalled,
             format!(
-                "{} is not installed. Run `agx ensure {}` or retry with `--install-policy if-missing`.",
+                "{} is not installed. Run `agx ensure {}` or retry with `--install if-missing`.",
                 agent.display_name, agent.name
             ),
         ));
@@ -330,38 +304,14 @@ fn exec_agent(agent: AgentDefinition) -> ExecAgent {
 
 fn install_policy_label(install_policy: InstallPolicyArg) -> &'static str {
     match install_policy {
-        InstallPolicyArg::Prompt => "prompt",
         InstallPolicyArg::Never => "never",
         InstallPolicyArg::IfMissing => "if-missing",
         InstallPolicyArg::Always => "always",
     }
 }
 
-fn confirm_exec_install(agent: AgentDefinition) -> Result<bool, AgxError> {
-    eprintln!(
-        "{} is not installed. Install it now? [y/N]",
-        agent.display_name
-    );
-
-    if let Ok(answer) = std::env::var("AGX_TEST_PROMPT_RESPONSE") {
-        return Ok(matches!(
-            answer.trim().to_ascii_lowercase().as_str(),
-            "y" | "yes"
-        ));
-    }
-
-    let mut input = String::new();
-    std::io::stdin()
-        .read_line(&mut input)
-        .map_err(|error| AgxError::new(AgxErrorCode::Cancelled, error.to_string()))?;
-    Ok(matches!(
-        input.trim().to_ascii_lowercase().as_str(),
-        "y" | "yes"
-    ))
-}
-
 pub fn install_guidance(agent: AgentDefinition, args: &[String]) -> ExecInstallGuidance {
-    let install_methods = agent.npm_package.map_or_else(Vec::new, |package| {
+    let mut install_methods = agent.npm_package.map_or_else(Vec::new, |package| {
         vec![
             ExecInstallMethod {
                 command: format!("bun add -g {package}"),
@@ -375,6 +325,41 @@ pub fn install_guidance(agent: AgentDefinition, args: &[String]) -> ExecInstallG
             },
         ]
     });
+
+    if let Some(package) = agent.cargo_package {
+        let args = if agent.cargo_install_args.is_empty() {
+            String::new()
+        } else {
+            format!(" {}", agent.cargo_install_args.join(" "))
+        };
+        install_methods.push(ExecInstallMethod {
+            command: format!("cargo install {package}{args}"),
+            label: "cargo",
+            method_type: "cargo",
+        });
+    }
+
+    if let Some(package) = crate::agents::uv_package(agent) {
+        let args = crate::agents::uv_install_args(agent);
+        let args = if args.is_empty() {
+            String::new()
+        } else {
+            format!(" {}", args.join(" "))
+        };
+        install_methods.push(ExecInstallMethod {
+            command: format!("uv tool install {package}{args}"),
+            label: "managed/uv",
+            method_type: "uv",
+        });
+    }
+
+    if let Some(package) = crate::agents::pip_package(agent) {
+        install_methods.push(ExecInstallMethod {
+            command: format!("pip install {package}"),
+            label: "managed/pip",
+            method_type: "pip",
+        });
+    }
 
     ExecInstallGuidance {
         docs_ref: "openspec/changes/rewrite-quantex-cli-as-agx-rust/tasks.md",

@@ -42,6 +42,13 @@ pub struct UpdateResult {
     pub strategy: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct ManagedPackageSpec {
+    pub name: String,
+    pub target_kind: Option<String>,
+    pub install_args: Vec<String>,
+}
+
 pub fn install_agent(
     agent: AgentDefinition,
     context: &CliContext,
@@ -107,7 +114,7 @@ pub fn install_agent(
         return Err(AgxError::new(
             AgxErrorCode::ManualActionRequired,
             format!(
-                "{} does not have a managed npm, Bun, or Cargo package yet.",
+                "{} does not have a managed npm, Bun, Cargo, pip, or uv package yet.",
                 agent.display_name
             ),
         ));
@@ -226,7 +233,11 @@ pub fn uninstall_agent(
         ));
     };
 
-    let command = uninstall_command(&installed_state.install_type, package_name);
+    let command = uninstall_command(
+        &installed_state.install_type,
+        package_name,
+        installed_state.package_target_kind.as_deref(),
+    );
 
     if context.dry_run {
         return Ok(LifecycleResult {
@@ -290,21 +301,36 @@ pub fn update_agent(
     }
 }
 
-pub fn update_agents_by_type(install_type: &str, packages: &[String]) -> Result<(), AgxError> {
-    let mut unique_packages = Vec::new();
+pub fn update_agents_by_type(
+    install_type: &str,
+    packages: &[ManagedPackageSpec],
+) -> Result<(), AgxError> {
+    let mut unique_packages: Vec<ManagedPackageSpec> = Vec::new();
     for package in packages {
-        if !unique_packages.contains(package) {
+        if !unique_packages.iter().any(|candidate| {
+            candidate.name == package.name
+                && candidate.target_kind == package.target_kind
+                && candidate.install_args == package.install_args
+        }) {
             unique_packages.push(package.clone());
         }
     }
 
     if unique_packages.is_empty() {
-        return Ok(());
+        return Err(AgxError::new(
+            AgxErrorCode::InvalidArgument,
+            format!("Unsupported managed update type: {install_type}"),
+        ));
     }
 
-    if install_type == "cargo" {
+    if matches!(install_type, "brew" | "cargo" | "pip" | "uv" | "winget") {
         for package in unique_packages {
-            let command = update_command("cargo", &package, &[]);
+            let command = update_command(
+                install_type,
+                &package.name,
+                &package.install_args,
+                package.target_kind.as_deref(),
+            );
             run_external_command(&command, AgxErrorCode::UpdateFailed)?;
         }
         return Ok(());
@@ -329,6 +355,7 @@ pub fn get_managed_installed_package_version(
     match install_type {
         "npm" => get_npm_installed_package_version(package_name),
         "bun" => get_bun_installed_package_version(package_name),
+        "uv" => get_uv_installed_package_version(package_name),
         _ => None,
     }
 }
@@ -375,6 +402,11 @@ fn update_managed_agent(
                         .iter()
                         .map(|arg| (*arg).to_string())
                         .collect()
+                } else if install_type == "uv" {
+                    crate::agents::uv_install_args(agent)
+                        .iter()
+                        .map(|arg| (*arg).to_string())
+                        .collect()
                 } else {
                     Vec::new()
                 },
@@ -396,7 +428,12 @@ fn update_managed_agent(
             });
         };
 
-    let command = update_command(install_type, package_name, &package_install_args);
+    let command = update_command(
+        install_type,
+        package_name,
+        &package_install_args,
+        installed_state.and_then(|state| state.package_target_kind.as_deref()),
+    );
     let strategy = Some(format!("managed/{install_type}"));
 
     if context.dry_run {
@@ -525,6 +562,14 @@ fn preferred_install_target(
     agent
         .cargo_package
         .map(|cargo_package| ("cargo", cargo_package, agent.cargo_install_args))
+        .or_else(|| {
+            crate::agents::uv_package(agent)
+                .map(|uv_package| ("uv", uv_package, crate::agents::uv_install_args(agent)))
+        })
+        .or_else(|| {
+            crate::agents::pip_package(agent)
+                .map(|pip_package| ("pip", pip_package, &[] as &[&str]))
+        })
 }
 
 fn npm_bun_update_strategy() -> &'static str {
@@ -544,11 +589,32 @@ fn install_command(
     package_install_args: &[&str],
 ) -> Vec<String> {
     match install_type {
+        "brew" => vec![
+            "brew".to_string(),
+            "install".to_string(),
+            package.to_string(),
+        ],
         "npm" => vec![
             "npm".to_string(),
             "install".to_string(),
             "-g".to_string(),
             package.to_string(),
+        ],
+        "pip" => pip_command_prefix()
+            .into_iter()
+            .chain(["install".to_string(), package.to_string()])
+            .collect(),
+        "uv" => std::iter::once("uv".to_string())
+            .chain(["tool", "install"].into_iter().map(str::to_string))
+            .chain(std::iter::once(package.to_string()))
+            .chain(package_install_args.iter().map(|arg| (*arg).to_string()))
+            .collect(),
+        "winget" => vec![
+            "winget".to_string(),
+            "install".to_string(),
+            "--id".to_string(),
+            package.to_string(),
+            "-e".to_string(),
         ],
         "cargo" => std::iter::once("cargo".to_string())
             .chain(["install"].into_iter().map(str::to_string))
@@ -568,9 +634,15 @@ fn update_command(
     install_type: &str,
     package: &str,
     package_install_args: &[String],
+    package_target_kind: Option<&str>,
 ) -> Vec<String> {
     let strategy = npm_bun_update_strategy();
     match (install_type, strategy) {
+        ("brew", _) => std::iter::once("brew".to_string())
+            .chain(["upgrade"].into_iter().map(str::to_string))
+            .chain((package_target_kind == Some("cask")).then(|| "--cask".to_string()))
+            .chain(std::iter::once(package.to_string()))
+            .collect(),
         ("npm", "respect-semver") => vec![
             "npm".to_string(),
             "update".to_string(),
@@ -595,6 +667,26 @@ fn update_command(
             .chain(std::iter::once("--force".to_string()))
             .chain(package_install_args.iter().cloned())
             .collect(),
+        ("pip", _) => pip_command_prefix()
+            .into_iter()
+            .chain([
+                "install".to_string(),
+                "--upgrade".to_string(),
+                package.to_string(),
+            ])
+            .collect(),
+        ("uv", _) => std::iter::once("uv".to_string())
+            .chain(["tool", "upgrade"].into_iter().map(str::to_string))
+            .chain(std::iter::once(package.to_string()))
+            .chain(package_install_args.iter().cloned())
+            .collect(),
+        ("winget", _) => vec![
+            "winget".to_string(),
+            "upgrade".to_string(),
+            "--id".to_string(),
+            package.to_string(),
+            "-e".to_string(),
+        ],
         _ => vec![
             "bun".to_string(),
             "update".to_string(),
@@ -605,31 +697,32 @@ fn update_command(
     }
 }
 
-fn update_many_command(install_type: &str, packages: &[String]) -> Result<Vec<String>, AgxError> {
+fn update_many_command(
+    install_type: &str,
+    packages: &[ManagedPackageSpec],
+) -> Result<Vec<String>, AgxError> {
     let strategy = npm_bun_update_strategy();
     match (install_type, strategy) {
         ("npm", "respect-semver") => Ok(std::iter::once("npm".to_string())
             .chain(["update", "-g"].into_iter().map(str::to_string))
-            .chain(packages.iter().cloned())
+            .chain(packages.iter().map(|package| package.name.clone()))
             .collect()),
         ("npm", _) => Ok(std::iter::once("npm".to_string())
             .chain(["install", "-g"].into_iter().map(str::to_string))
-            .chain(packages.iter().map(|package| format!("{package}@latest")))
+            .chain(
+                packages
+                    .iter()
+                    .map(|package| format!("{}@latest", package.name)),
+            )
             .collect()),
         ("bun", "respect-semver") => Ok(std::iter::once("bun".to_string())
             .chain(["update", "-g"].into_iter().map(str::to_string))
-            .chain(packages.iter().cloned())
+            .chain(packages.iter().map(|package| package.name.clone()))
             .collect()),
         ("bun", _) => Ok(std::iter::once("bun".to_string())
             .chain(["update", "-g", "--latest"].into_iter().map(str::to_string))
-            .chain(packages.iter().cloned())
+            .chain(packages.iter().map(|package| package.name.clone()))
             .collect()),
-        ("cargo", _) if packages.len() == 1 => Ok(vec![
-            "cargo".to_string(),
-            "install".to_string(),
-            packages[0].clone(),
-            "--force".to_string(),
-        ]),
         _ => Err(AgxError::new(
             AgxErrorCode::InvalidArgument,
             format!("Unsupported managed update type: {install_type}"),
@@ -637,13 +730,43 @@ fn update_many_command(install_type: &str, packages: &[String]) -> Result<Vec<St
     }
 }
 
-fn uninstall_command(install_type: &str, package: &str) -> Vec<String> {
+fn uninstall_command(
+    install_type: &str,
+    package: &str,
+    package_target_kind: Option<&str>,
+) -> Vec<String> {
     match install_type {
+        "brew" => std::iter::once("brew".to_string())
+            .chain(["uninstall"].into_iter().map(str::to_string))
+            .chain((package_target_kind == Some("cask")).then(|| "--cask".to_string()))
+            .chain(std::iter::once(package.to_string()))
+            .collect(),
         "npm" => vec![
             "npm".to_string(),
             "uninstall".to_string(),
             "-g".to_string(),
             package.to_string(),
+        ],
+        "pip" => pip_command_prefix()
+            .into_iter()
+            .chain([
+                "uninstall".to_string(),
+                "-y".to_string(),
+                package.to_string(),
+            ])
+            .collect(),
+        "uv" => vec![
+            "uv".to_string(),
+            "tool".to_string(),
+            "uninstall".to_string(),
+            package.to_string(),
+        ],
+        "winget" => vec![
+            "winget".to_string(),
+            "uninstall".to_string(),
+            "--id".to_string(),
+            package.to_string(),
+            "-e".to_string(),
         ],
         "cargo" => vec![
             "cargo".to_string(),
@@ -802,7 +925,7 @@ fn update_strategy(
     if installed_state.is_some_and(|state| {
         matches!(
             state.install_type.as_str(),
-            "bun" | "npm" | "brew" | "cargo" | "winget"
+            "bun" | "npm" | "brew" | "cargo" | "pip" | "uv" | "winget"
         )
     }) {
         "managed"
@@ -812,7 +935,7 @@ fn update_strategy(
         || (installed_state.is_some() && !crate::agents::self_update_commands(agent).is_empty())
     {
         "self-update"
-    } else if agent.npm_package.is_some() || agent.cargo_package.is_some() {
+    } else if crate::agents::has_managed_package(agent) {
         "managed"
     } else if installed_state
         .and_then(|state| state.command.as_ref())
@@ -877,6 +1000,47 @@ fn get_bun_installed_package_version(package_name: &str) -> Option<String> {
     })
 }
 
+fn get_uv_installed_package_version(package_name: &str) -> Option<String> {
+    let output = Command::new(executable_program("uv"))
+        .args(["tool", "list"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    parse_uv_tool_list_version(&String::from_utf8_lossy(&output.stdout), package_name)
+}
+
+fn parse_uv_tool_list_version(output: &str, package_name: &str) -> Option<String> {
+    let expected_name = normalize_python_package_name(package_name);
+    output.lines().find_map(|line| {
+        let line = line.trim();
+        let mut parts = line.split_whitespace();
+        let candidate_name = parts.next()?;
+        let version = parts.next()?.strip_prefix('v')?;
+        (normalize_python_package_name(candidate_name) == expected_name)
+            .then(|| version.to_string())
+    })
+}
+
+fn normalize_python_package_name(package_name: &str) -> String {
+    let mut normalized = String::new();
+    let mut previous_separator = false;
+    for char in package_name.chars() {
+        if matches!(char, '-' | '_' | '.') {
+            if !previous_separator {
+                normalized.push('-');
+                previous_separator = true;
+            }
+        } else {
+            normalized.push(char.to_ascii_lowercase());
+            previous_separator = false;
+        }
+    }
+    normalized
+}
+
 fn sanitize_env_key(value: &str) -> String {
     value
         .chars()
@@ -896,4 +1060,40 @@ fn executable_program(program: &str) -> &str {
     } else {
         program
     }
+}
+
+fn pip_command_prefix() -> Vec<String> {
+    let candidates: &[&[&str]] = &[
+        &["pip"],
+        &["pip3"],
+        &["python", "-m", "pip"],
+        &["python3", "-m", "pip"],
+    ];
+
+    for candidate in candidates {
+        if command_prefix_is_available(candidate) {
+            return candidate.iter().map(|part| (*part).to_string()).collect();
+        }
+    }
+
+    vec!["pip".to_string()]
+}
+
+fn is_command_available(command: &str) -> bool {
+    inspection::find_binary_in_path(command).is_some()
+}
+
+fn command_prefix_is_available(command: &[&str]) -> bool {
+    let Some((program, args)) = command.split_first() else {
+        return false;
+    };
+    if !is_command_available(program) {
+        return false;
+    }
+
+    Command::new(executable_program(program))
+        .args(args)
+        .arg("--version")
+        .output()
+        .is_ok_and(|output| output.status.success())
 }

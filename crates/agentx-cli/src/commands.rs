@@ -75,6 +75,17 @@ fn shortcut_exec_command(args: &[String], context: &CliContext) -> CommandResult
     } else {
         agent_args
     };
+    if !matches!(context.output_mode, crate::context::OutputMode::Human) {
+        return CommandResult::error(
+            "exec",
+            AgxError::new(
+                AgxErrorCode::InvalidArgument,
+                "Structured output is not supported for shortcut agent execution yet. Use a management command instead.",
+            ),
+            CommandTarget::agent(agent_name),
+            context,
+        );
+    }
     let interactive =
         context.interactive && matches!(context.output_mode, crate::context::OutputMode::Human);
 
@@ -407,6 +418,8 @@ struct InstallerCapabilities {
     bun: InstallerAvailability,
     cargo: InstallerAvailability,
     npm: InstallerAvailability,
+    pip: InstallerAvailability,
+    uv: InstallerAvailability,
     winget: InstallerAvailability,
 }
 
@@ -500,6 +513,8 @@ fn capabilities_command(context: &CliContext) -> CommandResult {
                 bun: installer_availability("bun"),
                 cargo: installer_availability("cargo"),
                 npm: installer_availability("npm"),
+                pip: installer_availability("pip"),
+                uv: installer_availability("uv"),
                 winget: installer_availability("winget"),
             },
             output_modes: vec!["human", "json", "ndjson"],
@@ -996,8 +1011,7 @@ fn update_command(agent_name: Option<&str>, all: bool, context: &CliContext) -> 
                     }
 
                     if inspection.latest_version.is_none()
-                        && agent.npm_package.is_none()
-                        && agent.cargo_package.is_none()
+                        && !agents::has_managed_package(*agent)
                         && agents::self_update_commands(*agent).is_empty()
                     {
                         let result = package_manager::UpdateResult {
@@ -1024,7 +1038,7 @@ fn update_command(agent_name: Option<&str>, all: bool, context: &CliContext) -> 
                     if let Some(installed_state) = installed_state.as_ref()
                         && matches!(
                             installed_state.install_type.as_str(),
-                            "bun" | "npm" | "cargo"
+                            "bun" | "npm" | "brew" | "cargo" | "pip" | "uv" | "winget"
                         )
                         && installed_state.package_name.is_some()
                     {
@@ -1341,7 +1355,21 @@ fn perform_grouped_updates(
 
     let packages = bucket
         .iter()
-        .filter_map(|entry| entry.installed_state.package_name.clone())
+        .filter_map(|entry| {
+            entry
+                .installed_state
+                .package_name
+                .clone()
+                .map(|package_name| package_manager::ManagedPackageSpec {
+                    name: package_name,
+                    target_kind: entry.installed_state.package_target_kind.clone(),
+                    install_args: entry
+                        .installed_state
+                        .package_install_args
+                        .clone()
+                        .unwrap_or_default(),
+                })
+        })
         .collect::<Vec<_>>();
 
     match package_manager::update_agents_by_type(&install_type, &packages) {
@@ -1874,6 +1902,8 @@ fn command_catalog() -> Vec<CommandDescriptor> {
                 "--quiet",
                 "--color",
                 "--log-level",
+                "--refresh",
+                "--no-cache",
                 "--timeout",
             ],
             name: "doctor",
@@ -2075,7 +2105,11 @@ fn supported_agents() -> Vec<&'static str> {
 }
 
 fn installer_availability(command: &'static str) -> InstallerAvailability {
-    let available = is_command_available(command);
+    let available = if command == "pip" {
+        is_pip_available()
+    } else {
+        is_command_available(command)
+    };
     InstallerAvailability {
         available,
         reason: if available {
@@ -2086,6 +2120,24 @@ fn installer_availability(command: &'static str) -> InstallerAvailability {
             Some("not-found")
         },
     }
+}
+
+fn is_pip_available() -> bool {
+    is_command_available("pip")
+        || is_command_available("pip3")
+        || python_module_is_available("python", "pip")
+        || python_module_is_available("python3", "pip")
+}
+
+fn python_module_is_available(python: &str, module: &str) -> bool {
+    if !is_command_available(python) {
+        return false;
+    }
+
+    std::process::Command::new(python)
+        .args(["-m", module, "--version"])
+        .output()
+        .is_ok_and(|output| output.status.success())
 }
 
 fn is_command_available(command: &str) -> bool {
@@ -2246,7 +2298,10 @@ fn schema_catalog() -> Vec<SchemaDocument> {
                         object_schema(vec![
                             ("brew", boolean_schema()),
                             ("bun", boolean_schema()),
+                            ("cargo", boolean_schema()),
                             ("npm", boolean_schema()),
+                            ("pip", boolean_schema()),
+                            ("uv", boolean_schema()),
                             ("winget", boolean_schema()),
                         ]),
                     ),
@@ -2545,6 +2600,8 @@ fn installer_capabilities_schema() -> JsonSchema {
         ("bun", installer_availability_schema()),
         ("cargo", installer_availability_schema()),
         ("npm", installer_availability_schema()),
+        ("pip", installer_availability_schema()),
+        ("uv", installer_availability_schema()),
         ("winget", installer_availability_schema()),
     ])
 }
@@ -2741,6 +2798,7 @@ fn installed_agent_state_schema() -> JsonSchema {
             ("agentName", string_schema()),
             ("command", string_schema()),
             ("installType", string_schema()),
+            ("packageInstallArgs", array_schema(string_schema())),
             ("packageName", string_schema()),
             ("packageTargetKind", string_schema()),
         ],
@@ -2848,7 +2906,7 @@ fn agent_capabilities(agent: AgentDefinition) -> AgentCapabilities {
     let can_self_update = !self_update_commands.is_empty();
 
     AgentCapabilities {
-        can_auto_install: agent.npm_package.is_some() || agent.cargo_package.is_some(),
+        can_auto_install: agents::has_managed_package(agent),
         can_auto_uninstall: inspection.installed && inspection.lifecycle == "managed",
         can_run: inspection.installed,
         can_self_update,
@@ -2900,6 +2958,28 @@ fn install_methods(agent: AgentDefinition) -> Vec<InstallMethodInfo> {
         });
     }
 
+    if let Some(package) = agents::uv_package(agent) {
+        let args = agents::uv_install_args(agent);
+        let args = if args.is_empty() {
+            String::new()
+        } else {
+            format!(" {}", args.join(" "))
+        };
+        methods.push(InstallMethodInfo {
+            command: format!("uv tool install {package}{args}"),
+            label: "managed/uv",
+            method_type: "uv",
+        });
+    }
+
+    if let Some(package) = agents::pip_package(agent) {
+        methods.push(InstallMethodInfo {
+            command: format!("pip install {package}"),
+            label: "managed/pip",
+            method_type: "pip",
+        });
+    }
+
     methods
 }
 
@@ -2923,6 +3003,8 @@ fn install_source_kind(install_type: &str) -> &'static str {
         "npm" => "npm",
         "brew" => "brew",
         "cargo" => "cargo",
+        "pip" => "pip",
+        "uv" => "uv",
         "winget" => "winget",
         "script" => "script",
         "binary" => "binary",
@@ -2972,7 +3054,10 @@ fn update_label_for(
 }
 
 fn is_managed_install_type(install_type: &str) -> bool {
-    matches!(install_type, "bun" | "npm" | "brew" | "cargo" | "winget")
+    matches!(
+        install_type,
+        "bun" | "npm" | "brew" | "cargo" | "pip" | "uv" | "winget"
+    )
 }
 
 fn format_package_target(package_name: Option<&str>, package_target_kind: Option<&str>) -> String {
@@ -3051,7 +3136,6 @@ fn exec_missing_result(
             execution: exec::ExecExecution {
                 args: args.to_vec(),
                 install_policy: match install_policy {
-                    crate::cli::InstallPolicyArg::Prompt => "prompt",
                     crate::cli::InstallPolicyArg::Never => "never",
                     crate::cli::InstallPolicyArg::IfMissing => "if-missing",
                     crate::cli::InstallPolicyArg::Always => "always",

@@ -51,6 +51,40 @@ pub fn self_update_commands(agent: AgentDefinition) -> Vec<&'static str> {
     }
 }
 
+pub fn pip_package(agent: AgentDefinition) -> Option<&'static str> {
+    match agent.name {
+        "vibe" => Some("mistral-vibe"),
+        _ => None,
+    }
+}
+
+pub fn uv_package(agent: AgentDefinition) -> Option<&'static str> {
+    match agent.name {
+        "kimi" | "openhands" if !cfg!(windows) => match agent.name {
+            "kimi" => Some("kimi-cli"),
+            "openhands" => Some("openhands"),
+            _ => None,
+        },
+        "vibe" => Some("mistral-vibe"),
+        _ => None,
+    }
+}
+
+pub fn uv_install_args(agent: AgentDefinition) -> &'static [&'static str] {
+    match agent.name {
+        "kimi" if !cfg!(windows) => &["--python", "3.13"],
+        "openhands" if !cfg!(windows) => &["--python", "3.12"],
+        _ => &[],
+    }
+}
+
+pub fn has_managed_package(agent: AgentDefinition) -> bool {
+    agent.npm_package.is_some()
+        || agent.cargo_package.is_some()
+        || pip_package(agent).is_some()
+        || uv_package(agent).is_some()
+}
+
 const AGENTS: [AgentDefinition; 28] = [
     AgentDefinition {
         name: "auggie",

@@ -131,7 +131,6 @@ pub enum LogLevelArg {
 #[derive(Debug, Clone, Copy, ValueEnum)]
 #[value(rename_all = "kebab-case")]
 pub enum InstallPolicyArg {
-    Prompt,
     Never,
     IfMissing,
     Always,
@@ -183,8 +182,8 @@ pub enum Command {
             long = "install",
             visible_alias = "install-policy",
             value_enum,
-            default_value = "prompt",
-            help = "Install policy before executing: prompt, never, if-missing, or always"
+            default_value = "never",
+            help = "Install policy before executing: never, if-missing, or always"
         )]
         install_policy: InstallPolicyArg,
         #[arg(

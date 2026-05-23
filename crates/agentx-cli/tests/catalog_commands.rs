@@ -113,6 +113,10 @@ fn commands_json_describes_install_exec_and_inspect_flags() {
         .iter()
         .find(|command| command["name"] == "install")
         .expect("install command should exist");
+    let doctor = commands
+        .iter()
+        .find(|command| command["name"] == "doctor")
+        .expect("doctor command should exist");
     let exec = commands
         .iter()
         .find(|command| command["name"] == "exec")
@@ -125,6 +129,12 @@ fn commands_json_describes_install_exec_and_inspect_flags() {
     let install_flags: Vec<_> = install["flags"]
         .as_array()
         .expect("install flags should be an array")
+        .iter()
+        .filter_map(|flag| flag.as_str())
+        .collect();
+    let doctor_flags: Vec<_> = doctor["flags"]
+        .as_array()
+        .expect("doctor flags should be an array")
         .iter()
         .filter_map(|flag| flag.as_str())
         .collect();
@@ -151,6 +161,8 @@ fn commands_json_describes_install_exec_and_inspect_flags() {
     assert!(!exec_flags.contains(&"--install-policy"));
     assert!(!exec_flags.contains(&"--json"));
     assert!(!exec_flags.contains(&"--timeout"));
+    assert!(doctor_flags.contains(&"--refresh"));
+    assert!(doctor_flags.contains(&"--no-cache"));
     assert!(inspect_flags.contains(&"--refresh"));
     assert!(inspect_flags.contains(&"--no-cache"));
 }
@@ -515,9 +527,16 @@ fn schema_capabilities_and_commands_describe_nested_contracts() {
         .iter()
         .find(|item| item["name"] == "features")
         .expect("features property should exist");
+    let installers = capabilities_properties
+        .iter()
+        .find(|item| item["name"] == "installers")
+        .expect("installers property should exist");
     let feature_properties = features["schema"]["properties"]
         .as_array()
         .expect("feature properties should be an array");
+    let installer_properties = installers["schema"]["properties"]
+        .as_array()
+        .expect("installer properties should be an array");
     assert!(
         feature_properties
             .iter()
@@ -528,6 +547,12 @@ fn schema_capabilities_and_commands_describe_nested_contracts() {
             .iter()
             .any(|item| item["name"] == "colorModes")
     );
+    assert!(
+        installer_properties
+            .iter()
+            .any(|item| item["name"] == "pip")
+    );
+    assert!(installer_properties.iter().any(|item| item["name"] == "uv"));
 
     let commands_output = run_agx(&workspace, &["--json", "schema", "commands"]);
     assert!(commands_output.status.success());
@@ -552,6 +577,34 @@ fn schema_capabilities_and_commands_describe_nested_contracts() {
             .iter()
             .any(|item| item["name"] == "stability")
     );
+}
+
+#[test]
+fn schema_doctor_installer_contract_includes_all_managed_installers() {
+    let workspace = TestWorkspace::new();
+    let output = run_agx(&workspace, &["--json", "schema", "doctor"]);
+
+    assert!(output.status.success());
+    let json = stdout_json(&output);
+    let properties = json["data"]["commands"][0]["dataSchema"]["properties"]
+        .as_array()
+        .expect("doctor properties should be an array");
+    let installers = properties
+        .iter()
+        .find(|item| item["name"] == "installers")
+        .expect("installers property should exist");
+    let installer_properties = installers["schema"]["properties"]
+        .as_array()
+        .expect("installer properties should be an array");
+
+    for installer in ["brew", "bun", "cargo", "npm", "pip", "uv", "winget"] {
+        assert!(
+            installer_properties
+                .iter()
+                .any(|item| item["name"] == installer),
+            "doctor installer schema should include {installer}"
+        );
+    }
 }
 
 #[test]

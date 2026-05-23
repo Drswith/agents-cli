@@ -4,18 +4,22 @@ use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub struct TestWorkspace {
     root: PathBuf,
 }
 
+static NEXT_WORKSPACE_ID: AtomicU64 = AtomicU64::new(0);
+
 impl TestWorkspace {
     pub fn new() -> Self {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0_u128, |duration| duration.as_nanos());
-        let root = std::env::temp_dir().join(format!("agx-tests-{unique}"));
+        let sequence = NEXT_WORKSPACE_ID.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!("agx-tests-{unique}-{sequence}"));
         fs::create_dir_all(&root).expect("failed to create test workspace");
         Self { root }
     }

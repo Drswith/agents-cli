@@ -148,11 +148,19 @@ echo {\"dependencies\":{\"deepseek-tui\":{\"version\":\"0.8.24\"}}}\r\n",
         )
         .expect("npm.cmd should be written");
     } else {
+        let npm_path = workspace.bin_dir().join("npm");
         fs::write(
-            workspace.bin_dir().join("npm"),
+            &npm_path,
             "#!/bin/sh\nprintf '%s\\n' '{\"dependencies\":{\"deepseek-tui\":{\"version\":\"0.8.24\"}}}'\n",
         )
         .expect("npm shim should be written");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            fs::set_permissions(&npm_path, fs::Permissions::from_mode(0o755))
+                .expect("npm shim should be executable");
+        }
     }
 
     let output = run_agx(&workspace, &["--json", "list"]);
@@ -223,6 +231,55 @@ fn inspect_exposes_install_methods_and_self_update_metadata() {
         json["data"]["capabilities"]["selfUpdateCommands"][0],
         "claude update"
     );
+}
+
+#[test]
+fn inspect_exposes_python_install_methods_for_vibe() {
+    let workspace = TestWorkspace::new();
+    let output = run_agx(&workspace, &["--json", "inspect", "vibe"]);
+
+    assert!(output.status.success());
+    let json = stdout_json(&output);
+    let methods = json["data"]["capabilities"]["installMethods"]
+        .as_array()
+        .expect("install methods should be an array");
+    let commands: Vec<_> = methods
+        .iter()
+        .filter_map(|method| method["command"].as_str())
+        .collect();
+    let labels: Vec<_> = methods
+        .iter()
+        .filter_map(|method| method["label"].as_str())
+        .collect();
+
+    assert!(commands.contains(&"uv tool install mistral-vibe"));
+    assert!(commands.contains(&"pip install mistral-vibe"));
+    assert!(labels.contains(&"managed/uv"));
+    assert!(labels.contains(&"managed/pip"));
+    assert_eq!(json["data"]["capabilities"]["canAutoInstall"], true);
+}
+
+#[test]
+fn inspect_exposes_uv_python_args_for_kimi_on_unix() {
+    if cfg!(windows) {
+        return;
+    }
+
+    let workspace = TestWorkspace::new();
+    let output = run_agx(&workspace, &["--json", "inspect", "kimi"]);
+
+    assert!(output.status.success());
+    let json = stdout_json(&output);
+    let methods = json["data"]["capabilities"]["installMethods"]
+        .as_array()
+        .expect("install methods should be an array");
+    let commands: Vec<_> = methods
+        .iter()
+        .filter_map(|method| method["command"].as_str())
+        .collect();
+
+    assert!(commands.contains(&"uv tool install kimi-cli --python 3.13"));
+    assert_eq!(json["data"]["capabilities"]["canAutoInstall"], true);
 }
 
 #[test]

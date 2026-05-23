@@ -20,6 +20,8 @@ fn capabilities_json_reports_controlled_installer_availability() {
     assert_eq!(json["data"]["installers"]["bun"]["available"], true);
     assert_eq!(json["data"]["installers"]["cargo"]["available"], false);
     assert_eq!(json["data"]["installers"]["npm"]["available"], false);
+    assert_eq!(json["data"]["installers"]["pip"]["available"], false);
+    assert_eq!(json["data"]["installers"]["uv"]["available"], false);
     assert_eq!(
         json["data"]["features"]["execInstallPolicies"][1],
         "if-missing"
@@ -109,6 +111,28 @@ fn doctor_json_reports_cargo_installer_availability() {
     assert!(output.status.success());
     let json = stdout_json(&output);
     assert_eq!(json["data"]["installers"]["cargo"], true);
+    let issues = json["data"]["issues"]
+        .as_array()
+        .expect("issues should be an array");
+    assert!(
+        !issues
+            .iter()
+            .any(|issue| issue["code"] == "NO_MANAGED_INSTALLER")
+    );
+}
+
+#[test]
+fn doctor_json_reports_python_installer_availability() {
+    let workspace = TestWorkspace::new();
+    workspace.install_fake_agent_binary("pip");
+    workspace.install_fake_agent_binary("uv");
+
+    let output = run_agx(&workspace, &["--json", "doctor"]);
+
+    assert!(output.status.success());
+    let json = stdout_json(&output);
+    assert_eq!(json["data"]["installers"]["pip"], true);
+    assert_eq!(json["data"]["installers"]["uv"], true);
     let issues = json["data"]["issues"]
         .as_array()
         .expect("issues should be an array");
@@ -433,6 +457,7 @@ fn doctor_human_output_reports_missing_managed_installers() {
     assert!(output.status.success());
     let stdout = stdout_text(&output);
     assert!(stdout.contains("No managed installer found"));
+    assert!(stdout.contains("pip, uv"));
 }
 
 #[test]
